@@ -7,14 +7,14 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from pymongo import MongoClient
 from dotenv import load_dotenv
-from urllib.parse import urlparse, urlunparse
 
 # Load environment variables from .env file
 load_dotenv()
 
 # Initialize Flask App
 app = Flask(__name__)
-CORS(app)
+# The fix: Explicitly allow all origins for all routes to handle CORS in a production environment
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 # --- ZAP Configuration ---
 ZAP_PROXY_URL = 'http://127.0.0.1:8080'
@@ -61,15 +61,12 @@ def run_zap_scan(scan_id, target_url):
     try:
         print(f"Thread started for scan: {scan_id}")
         
-        # Access the target to ensure ZAP is aware of it
         zap_api_request('core', 'accessUrl', {'url': target_url})
 
-        # Step 1: Start Spider Scan
         print("Starting ZAP spider scan...")
         spider_response = zap_api_request('spider', 'scan', {'url': target_url})
         spider_id = spider_response.get('scan')
 
-        # Wait for the spider to finish
         while True:
             status_response = zap_api_request('spider', 'status', {'scanId': spider_id})
             progress = int(status_response.get('status', '0'))
@@ -79,12 +76,10 @@ def run_zap_scan(scan_id, target_url):
             time.sleep(2)
         print("Spider scan completed.")
 
-        # Step 2: Start Active Scan
         print("Starting ZAP active scan...")
         ascan_response = zap_api_request('ascan', 'scan', {'url': target_url, 'recurse': 'true'})
         ascan_id = ascan_response.get('scan')
         
-        # Wait for the active scan to finish
         while True:
             status_response = zap_api_request('ascan', 'status', {'scanId': ascan_id})
             progress = int(status_response.get('status', '0'))
@@ -94,7 +89,6 @@ def run_zap_scan(scan_id, target_url):
             time.sleep(5)
         print("Active scan completed.")
 
-        # Step 3: Get Results
         alerts_response = requests.get(
             f"{ZAP_PROXY_URL}/JSON/core/view/alerts",
             params={'apikey': ZAP_API_KEY, 'baseurl': target_url}
@@ -102,17 +96,15 @@ def run_zap_scan(scan_id, target_url):
         alerts_response.raise_for_status()
         alerts = alerts_response.json().get('alerts', [])
         
-        # Map ZAP alerts to our desired format
         vulnerabilities = []
         for alert in alerts:
             vulnerabilities.append({
                 'name': alert.get('alert'),
-                'risk': alert.get('riskdesc').split(' ')[0], # Extract risk level
+                'risk': alert.get('riskdesc').split(' ')[0],
                 'url': alert.get('url'),
                 'description': alert.get('description')
             })
 
-        # Step 4: Update Database with Final Results
         scans_collection.update_one(
             {'scan_id': scan_id},
             {'$set': {
@@ -134,11 +126,8 @@ def run_zap_scan(scan_id, target_url):
         )
         print(f"Scan {scan_id} failed: {e}")
 
-
-# --- API Endpoints ---
 @app.route('/scan', methods=['POST'])
 def start_scan():
-    """Starts a new scan in a separate thread and returns the scan ID."""
     if not client:
         return jsonify({"error": "Database connection failed."}), 500
 
@@ -166,7 +155,6 @@ def start_scan():
 
 @app.route('/scan-results/<scan_id>', methods=['GET'])
 def get_scan_results(scan_id):
-    """Returns the current status and results for a given scan ID."""
     if not client:
         return jsonify({"error": "Database connection failed."}), 500
     
@@ -178,7 +166,6 @@ def get_scan_results(scan_id):
 
 @app.route('/historical-scans', methods=['GET'])
 def get_historical_scans():
-    """Returns all historical scans from the database."""
     if not client:
         return jsonify({"error": "Database connection failed."}), 500
     
